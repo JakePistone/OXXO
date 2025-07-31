@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OXXO Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script> <!-- Add PapaParse for CSV parsing -->
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #map { 
+            height: 100vh; /* Full viewport height */
+            width: 100%; /* Full width */
+        }
+        .custom-marker-icon {
+            border: 2px solid #ffffff; /* White border */
+            color: white; /* Number color */
+            font-weight: bold;
+            font-size: 14px;
+            text-align: center;
+            border-radius: 50%; /* Circular shape */
+            width: 30px;
+            height: 30px;
+            line-height: 30px; /* Center vertically */
+        }
+        .dropdown-container {
+            position: absolute;
+            top: 10px;
+            right: 60px; /* Moved left to avoid overlap with layer control */
+            z-index: 1100; /* Above map, below expanded layer control */
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        #property-selector {
+            position: absolute;
+            top: 50px; /* Position below title */
+            left: 50px;
+            z-index: 1000;
+            padding: 5px;
+            background: rgb(250, 251, 251);
+            border: 1px solid #ccc;
+            max-width: 300px;
+            font-size: 14px;
+        }
+        #property-search-container {
+            position: absolute;
+            top: 80px; /* Position below selector */
+            left: 50px;
+            z-index: 1000;
+            max-width: 300px;
+        }
+        #property-search {
+            width: 100%;
+            padding: 5px;
+            background: rgb(250, 251, 251);
+            border: 1px solid #ccc;
+            font-size: 14px;
+        }
+        #search-results {
+            max-height: 200px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid #ccc;
+            border-top: none;
+            display: none;
+        }
+        #search-results div {
+            padding: 5px;
+            cursor: pointer;
+        }
+        #search-results div:hover {
+            background: #f0f0f0;
+        }
+        #market-selector, .toggle-container {
+            padding: 5px;
+            background: rgb(250, 251, 251);
+            border: 1px solid #ccc;
+            max-width: 300px;
+            font-size: 14px;
+        }
+        .map-title {
+            position: absolute;
+            top: 10px;
+            left: 50px;
+            z-index: 1000;
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            background-color: rgba(255, 255, 255, 0.8); /* Semi-transparent white background */
+            padding: 5px 10px; /* Padding for better appearance */
+            border-radius: 4px; /* Rounded corners */
+        }
+        .logo {
+            position: absolute;
+            bottom: 10px;
+            left: 20px;
+            width: 70px;
+            height: 50px;
+            z-index: 1000;
+            background-color: #fcfdfeee; /* Blue background to match the logo */
+            padding: 3px 10px; /* Padding for better appearance */
+            border-radius: 3px; /* Rounded corners */
+            color: rgb(16, 17, 17);
+            font-weight: bold;
+            font-size: 14px;
+            text-align: center;
+            line-height: 20px; /* Center text vertically */
+        }
+        .leaflet-control-layers-expanded {
+            z-index: 1200 !important; /* Higher than dropdown-container */
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1300;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+        }
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+        }
+        .close:hover,
+        .close:focus {
+            color: black;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        #exclusions-list {
+            list-style-type: none;
+            padding: 0;
+        }
+        #exclusions-list li {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="map-title"> OXXO Map</div>
+    <div class="logo"> NATIONAL --- IOS --- <br></div>
+    <select id="property-selector">
+        <option value="">Loading properties...</option> <!-- Placeholder while loading -->
+    </select>
+    <div id="property-search-container">
+        <input type="text" id="property-search" placeholder="Search properties...">
+        <div id="search-results"></div>
+    </div>
+    <div class="dropdown-container">
+        <select id="market-selector" class="toggle-container">
+            <option value="">Loading markets...</option>
+        </select>
+        <button id="manage-exclusions">Manage Exclusions</button>
+        <button id="send-excluded">Send Excluded List</button>
+    </div>
+    <div id="map"></div>
+    <div id="exclusions-modal" class="modal">
+        <div class="modal-content">
+            <span class="close">×</span>
+            <h2>Manage Exclusions (Check to Exclude)</h2>
+            <ul id="exclusions-list"></ul>
+        </div>
+    </div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize the map
+        var map = L.map('map').setView([32.7767, -96.7970], 10); // Center on Dallas, TX with broader zoom
+        
+        // Define tile layers
+        var streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map); // Add streetLayer as the default and only initial layer
+        var satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+        });
+
+        // Layer control
+        var baseLayers = {
+            "Street Map": streetLayer,
+            "Satellite": satelliteLayer
+        };
+        L.control.layers(baseLayers, null, { collapsed: true }).addTo(map); // Ensure only one layer is active at a time
+
+        // Object to store markers by index
+        var markers = {};
+        var properties = [];
+        var excluded = new Set();
+
+        // Default color for markers
+        var defaultColor = '#3374ff'; // Default blue color
+
+        // Load properties from Google Sheets published CSV
+        Papa.parse('https://docs.google.com/spreadsheets/d/e/2PACX-1vT85Xk0tmBBs6NyDfvmeEzX60XxWEKRkSensfc_N3fesn0oKZwZkjK6B-1PMK_9itXDRmMG74uaqRFU/pub?output=csv', {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            complete: function(results) {
+                properties = results.data.map(row => ({
+                    name: row.Name || 'N/A', // Adjusted for 'Name' header case
+                    lat: parseFloat(row.lat),
+                    lng: parseFloat(row.lng),
+                    zoning: row.Zoning || 'N/A',
+                    ac: row.ac || 'N/A',
+                    market: row.Market || 'N/A',
+                    dollar_per_sf: row['$/sf'] || 'N/A',
+                    price: row.Price || 'N/A',
+                    link: row.link || 'N/A'
+                })).filter(row => !isNaN(row.lat) && !isNaN(row.lng)); // Filter invalid rows
+
+                // Add numbered markers for each property with default color
+                properties.forEach(function(property, index) {
+                    var number = index + 1; // Start numbering from 1
+                    var bgColor = defaultColor; // Use default color
+                    var customIcon = L.divIcon({
+                        className: '', // Clear default class to avoid conflicts
+                        html: '<div class="custom-marker-icon" style="background-color: ' + bgColor + ';">' + number + '</div>',
+                        iconSize: [30, 30], // Size of the icon
+                        iconAnchor: [15, 15] // Anchor point (center of the circle)
+                    });
+                    var popupContent = `
+                        <b>Name:</b> ${property.name}<br>
+                        <b>Lat:</b> ${property.lat}<br>
+                        <b>Lng:</b> ${property.lng}<br>
+                        <b>Zoning:</b> ${property.zoning}<br>
+                        <b>AC:</b> ${property.ac}<br>
+                        <b>Market:</b> ${property.market}<br>
+                        <b>$/sf:</b> ${property.dollar_per_sf}<br>
+                        <b>Price:</b> ${property.price}<br>
+                        <a href="${property.link}" target="_blank">View Brochure / Details</a>
+                        <br><label><input type="checkbox" class="exclude-checkbox" data-index="${index}"> Exclude from table</label>
+                    `;
+                    var marker = L.marker([property.lat, property.lng], { icon: customIcon })
+                        .addTo(map)
+                        .bindPopup(popupContent);
+                    markers[index] = marker;
+                });
+
+                // Populate the selector
+                var selector = document.getElementById('property-selector');
+                selector.innerHTML = '<option value="">Select a property...</option>'; // Clear loading message
+                properties.forEach(function(property, index) {
+                    var option = document.createElement('option');
+                    option.value = index;
+                    option.textContent = (index + 1) + ': ' + property.name;
+                    selector.appendChild(option);
+                });
+
+                // Event listener for selector change
+                selector.addEventListener('change', function() {
+                    var selectedIndex = this.value;
+                    if (selectedIndex !== '') {
+                        var property = properties[selectedIndex];
+                        map.flyTo([property.lat, property.lng], 15); // Fly to the location with zoom level 15
+                        markers[selectedIndex].openPopup(); // Open the popup
+                    }
+                });
+
+                // Search functionality
+                var searchInput = document.getElementById('property-search');
+                var searchResults = document.getElementById('search-results');
+                searchInput.addEventListener('input', function() {
+                    var value = this.value.toLowerCase();
+                    searchResults.innerHTML = '';
+                    if (value === '') {
+                        searchResults.style.display = 'none';
+                        return;
+                    }
+                    var matchingProperties = properties.filter((prop, index) => prop.name.toLowerCase().includes(value));
+                    if (matchingProperties.length > 0) {
+                        matchingProperties.forEach((prop, i) => {
+                            var originalIndex = properties.indexOf(prop);
+                            var resultItem = document.createElement('div');
+                            resultItem.textContent = (originalIndex + 1) + ': ' + prop.name;
+                            resultItem.onclick = function() {
+                                map.flyTo([prop.lat, prop.lng], 15);
+                                markers[originalIndex].openPopup();
+                                searchResults.style.display = 'none';
+                                searchInput.value = '';
+                            };
+                            searchResults.appendChild(resultItem);
+                        });
+                        searchResults.style.display = 'block';
+                    } else {
+                        searchResults.style.display = 'none';
+                    }
+                });
+
+                // Populate market selector
+                var markets = [...new Set(properties.map(p => p.market).filter(m => m !== 'N/A' && m !== ''))];
+                var marketSelector = document.getElementById('market-selector');
+                marketSelector.innerHTML = '<option value="all">All Markets</option>';
+                markets.forEach(function(market) {
+                    var option = document.createElement('option');
+                    option.value = market;
+                    option.textContent = market;
+                    marketSelector.appendChild(option);
+                });
+
+                // Event listener for market selector
+                marketSelector.addEventListener('change', function() {
+                    var selectedMarket = this.value;
+                    Object.keys(markers).forEach(function(index) {
+                        var prop = properties[index];
+                        if (selectedMarket === 'all' || prop.market === selectedMarket) {
+                            if (!map.hasLayer(markers[index])) {
+                                markers[index].addTo(map);
+                            }
+                        } else {
+                            if (map.hasLayer(markers[index])) {
+                                map.removeLayer(markers[index]);
+                            }
+                        }
+                    });
+                });
+
+                // Manage exclusions
+                var manageBtn = document.getElementById('manage-exclusions');
+                manageBtn.addEventListener('click', function() {
+                    var modal = document.getElementById('exclusions-modal');
+                    modal.style.display = 'block';
+                    var list = document.getElementById('exclusions-list');
+                    list.innerHTML = '';
+                    properties.forEach(function(prop, index) {
+                        var li = document.createElement('li');
+                        var checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.dataset.index = index;
+                        checkbox.classList.add('exclude-checkbox');
+                        if (excluded.has(index)) checkbox.checked = true;
+                        li.appendChild(checkbox);
+                        li.appendChild(document.createTextNode(' ' + (index + 1) + ': ' + prop.name));
+                        list.appendChild(li);
+                    });
+                });
+
+                // Close modal
+                var closeSpans = document.getElementsByClassName('close');
+                for (var i = 0; i < closeSpans.length; i++) {
+                    closeSpans[i].addEventListener('click', function() {
+                        this.parentElement.parentElement.style.display = 'none';
+                    });
+                }
+
+                // Send excluded button
+                var sendBtn = document.getElementById('send-excluded');
+                sendBtn.addEventListener('click', function() {
+                    if (excluded.size === 0) {
+                        alert('No properties excluded.');
+                        return;
+                    }
+                    var body = 'Excluded Properties:\n\n';
+                    properties.forEach(function(prop, index) {
+                        if (excluded.has(index)) {
+                            body += (index + 1) + ': ' + prop.name + '\n';
+                            body += 'Lat: ' + prop.lat + '\n';
+                            body += 'Lng: ' + prop.lng + '\n';
+                            body += 'Zoning: ' + prop.zoning + '\n';
+                            body += 'AC: ' + prop.ac + '\n';
+                            body += 'Market: ' + prop.market + '\n';
+                            body += '$/sf: ' + prop.dollar_per_sf + '\n';
+                            body += 'Price: ' + prop.price + '\n';
+                            body += 'Link: ' + prop.link + '\n\n';
+                        }
+                    });
+                    var encodedTo = encodeURIComponent('jpistone@national-ios.com');
+                    var encodedSubject = encodeURIComponent('Excluded Properties');
+                    var encodedBody = encodeURIComponent(body);
+                    
+                    // For Microsoft 365/Office Outlook Web (use this if it's a business email)
+                    var outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodedTo}&subject=${encodedSubject}&body=${encodedBody}`;
+                    
+                    // Alternative for personal Outlook.com: 
+                    // var outlookUrl = `https://outlook.live.com/mail/0/deeplink/compose?to=${encodedTo}&subject=${encodedSubject}&body=${encodedBody}`;
+                    
+                    window.open(outlookUrl, '_blank');  // Opens in a new tab
+                });
+            },
+            error: function(error) {
+                console.error('Error loading CSV:', error);
+                document.getElementById('property-selector').innerHTML = '<option value="">Error loading properties</option>';
+                document.getElementById('property-search').placeholder = 'Error loading properties';
+                document.getElementById('market-selector').innerHTML = '<option value="">Error loading markets</option>';
+            }
+        });
+
+        // Event delegation for exclude checkboxes (in popups and modal)
+        document.addEventListener('change', function(e) {
+            if (e.target.classList.contains('exclude-checkbox')) {
+                var index = parseInt(e.target.dataset.index);
+                if (e.target.checked) {
+                    excluded.add(index);
+                } else {
+                    excluded.delete(index);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
